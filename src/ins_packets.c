@@ -263,6 +263,24 @@ int decode_system_state_packet(system_state_packet_t* system_state_packet, an_pa
 		memcpy(&system_state_packet->standard_deviation[0], &an_packet->data[88], 3 * sizeof(float));
 		return 0;
 	}
+	/* Subsonus variant: 32-bit status fields shift everything +4 bytes (116 total). */
+	else if(an_packet->id == packet_id_system_state && an_packet->length == 116)
+	 {
+		memcpy(&system_state_packet->system_status, &an_packet->data[0], sizeof(uint16_t));
+		memcpy(&system_state_packet->filter_status, &an_packet->data[4], sizeof(uint16_t));
+		memcpy(&system_state_packet->unix_time_seconds, &an_packet->data[8], sizeof(uint32_t));
+		memcpy(&system_state_packet->microseconds, &an_packet->data[12], sizeof(uint32_t));
+		memcpy(&system_state_packet->latitude, &an_packet->data[16], sizeof(double));
+		memcpy(&system_state_packet->longitude, &an_packet->data[24], sizeof(double));
+		memcpy(&system_state_packet->height, &an_packet->data[32], sizeof(double));
+		memcpy(&system_state_packet->velocity[0], &an_packet->data[40], 3 * sizeof(float));
+		memcpy(&system_state_packet->body_acceleration[0], &an_packet->data[52], 3 * sizeof(float));
+		memcpy(&system_state_packet->g_force, &an_packet->data[64], sizeof(float));
+		memcpy(&system_state_packet->orientation[0], &an_packet->data[68], 3 * sizeof(float));
+		memcpy(&system_state_packet->angular_velocity[0], &an_packet->data[80], 3 * sizeof(float));
+		memcpy(&system_state_packet->standard_deviation[0], &an_packet->data[92], 3 * sizeof(float));
+		return 0;
+	}
 	else return 1;
 }
 
@@ -348,7 +366,8 @@ int decode_quaternion_orientation_standard_deviation_packet(quaternion_orientati
 
 int decode_raw_sensors_packet(raw_sensors_packet_t* raw_sensors_packet, an_packet_t* an_packet)
 {
-	if(an_packet->id == packet_id_raw_sensors && an_packet->length == 48)
+	/* Subsonus appends 4 bytes (velocity of sound) -> 52; read the first 48. */
+	if(an_packet->id == packet_id_raw_sensors && an_packet->length >= 48)
 	 {
 		memcpy(&raw_sensors_packet->accelerometers[0], &an_packet->data[0], 3 * sizeof(float));
 		memcpy(&raw_sensors_packet->gyroscopes[0], &an_packet->data[12], 3 * sizeof(float));
