@@ -29,6 +29,9 @@
 #else
 #endif
 #include "adnav_comms.h"
+#if !defined(WIN32) && !defined(_WIN32)
+#include <netinet/tcp.h>  // TCP_KEEPIDLE / TCP_KEEPINTVL / TCP_KEEPCNT
+#endif
 
 namespace adnav {
 
@@ -117,6 +120,22 @@ void Communicator::open() {
 		if ((sock_ = socket(AF_INET, SOCK_STREAM, 0)) < 0) {
 			throw std::runtime_error("Unable to generate TCP socket");
 		}
+
+		// TCP keepalive so a device that vanishes without a clean close (power
+		// loss) is detected in ~11s instead of the multi-minute kernel default;
+		// read() then errors instead of blocking forever on a dead socket.
+		#if !defined(WIN32) && !defined(_WIN32)
+		{
+			int ka_on = 1;    // SO_KEEPALIVE enable
+			int ka_idle = 5;  // seconds of idle before the first probe
+			int ka_intvl = 2; // seconds between probes
+			int ka_cnt = 3;   // failed probes before the connection is dropped
+			setsockopt(sock_, SOL_SOCKET,  SO_KEEPALIVE,  &ka_on,    sizeof(ka_on));
+			setsockopt(sock_, IPPROTO_TCP, TCP_KEEPIDLE,  &ka_idle,  sizeof(ka_idle));
+			setsockopt(sock_, IPPROTO_TCP, TCP_KEEPINTVL, &ka_intvl, sizeof(ka_intvl));
+			setsockopt(sock_, IPPROTO_TCP, TCP_KEEPCNT,   &ka_cnt,   sizeof(ka_cnt));
+		}
+		#endif
 
 		// Give user info
 		inet_ntop(AF_INET, &(address_.sin_addr), ip, INET_ADDRSTRLEN);
