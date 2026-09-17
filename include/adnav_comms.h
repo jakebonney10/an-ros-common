@@ -106,6 +106,11 @@ class Communicator{
         void open();
         void close();
 
+        // Attempt a single, bounded, non-throwing TCP-client (re)connection.
+        // Returns true on success; the caller controls the retry cadence. Only
+        // meaningful for CONNECTION_TCP_CLIENT.
+        bool reconnectClient();
+
         int read(void* buf, size_t len);
         int write(void* buf, size_t len);
         int getMethod() {return connection_ops_.method;}
@@ -136,6 +141,9 @@ class Communicator{
         struct sockaddr_in address_, servAddr_;
         // Lengths of the sockaddr_in structs.
         socklen_t addressLen_, servAddrLen_;
+
+        // Apply TCP keepalive options to the current client socket (sock_).
+        void enableKeepAlive();
 
         // Private Validation and error handling methods.
         bool validateBaudRate();

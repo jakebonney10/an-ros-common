@@ -31,6 +31,8 @@
 #include "adnav_comms.h"
 #if !defined(WIN32) && !defined(_WIN32)
 #include <netinet/tcp.h>  // TCP_KEEPIDLE / TCP_KEEPINTVL / TCP_KEEPCNT
+#include <fcntl.h>        // fcntl (non-blocking connect)
+#include <sys/select.h>   // select (bounded connect timeout)
 #endif
 
 namespace adnav {
@@ -92,6 +94,76 @@ void Communicator::initComms(const adnav_connections_data_t& ops) {
 }
 
 
+void Communicator::enableKeepAlive() {
+	// Detect a device that vanishes without a clean close (power loss) in
+	// ~idle + cnt*intvl seconds so read() errors out instead of blocking forever
+	// on a dead socket.
+#if !defined(WIN32) && !defined(_WIN32)
+	int ka_on = 1;    // SO_KEEPALIVE enable
+	int ka_idle = 5;  // seconds of idle before the first probe
+	int ka_intvl = 2; // seconds between probes
+	int ka_cnt = 3;   // failed probes before the connection is dropped
+	setsockopt(sock_, SOL_SOCKET,  SO_KEEPALIVE,  &ka_on,    sizeof(ka_on));
+	setsockopt(sock_, IPPROTO_TCP, TCP_KEEPIDLE,  &ka_idle,  sizeof(ka_idle));
+	setsockopt(sock_, IPPROTO_TCP, TCP_KEEPINTVL, &ka_intvl, sizeof(ka_intvl));
+	setsockopt(sock_, IPPROTO_TCP, TCP_KEEPCNT,   &ka_cnt,   sizeof(ka_cnt));
+#endif
+}
+
+bool Communicator::reconnectClient() {
+	if (connection_ops_.method != CONNECTION_TCP_CLIENT) return false;
+
+	// Drop any stale socket so we start from a clean fd.
+#if defined(WIN32) || defined(_WIN32)
+	if (sock_ != INVALID_SOCKET) { closesocket(sock_); sock_ = INVALID_SOCKET; }
+	if ((sock_ = socket(AF_INET, SOCK_STREAM, 0)) == INVALID_SOCKET) return false;
+	enableKeepAlive();
+	if (connect(sock_, (struct sockaddr*)&address_, sizeof(address_)) < 0) {
+		closesocket(sock_); sock_ = INVALID_SOCKET; return false;
+	}
+	connection_ = 0;
+	isOpen_ = true;
+	return true;
+#else
+	if (sock_ != -1) { ::close(sock_); sock_ = -1; }
+	if ((sock_ = socket(AF_INET, SOCK_STREAM, 0)) < 0) { sock_ = -1; return false; }
+	enableKeepAlive();
+
+	// Non-blocking connect bounded by a short timeout, so a powered-off device
+	// doesn't stall the caller for the kernel's default SYN timeout.
+	const int connect_timeout_s = 2;
+	int flags = fcntl(sock_, F_GETFL, 0);
+	fcntl(sock_, F_SETFL, flags | O_NONBLOCK);
+
+	bool ok = false;
+	if (::connect(sock_, (struct sockaddr*)&address_, sizeof(address_)) == 0) {
+		ok = true;
+	} else if (errno == EINPROGRESS) {
+		fd_set wset;
+		FD_ZERO(&wset);
+		FD_SET(sock_, &wset);
+		struct timeval tv;
+		tv.tv_sec = connect_timeout_s;
+		tv.tv_usec = 0;
+		if (select(sock_ + 1, nullptr, &wset, nullptr, &tv) > 0) {
+			int soerr = 0;
+			socklen_t len = sizeof(soerr);
+			if (getsockopt(sock_, SOL_SOCKET, SO_ERROR, &soerr, &len) == 0 && soerr == 0) {
+				ok = true;
+			}
+		}
+	}
+
+	if (!ok) { ::close(sock_); sock_ = -1; return false; }
+
+	// Restore blocking mode for the driver's synchronous reads.
+	fcntl(sock_, F_SETFL, flags);
+	connection_ = 0;
+	isOpen_ = true;
+	return true;
+#endif
+}
+
 void Communicator::open() {
 	std::stringstream ss;
 	char ip[INET_ADDRSTRLEN];
@@ -121,21 +193,7 @@ void Communicator::open() {
 			throw std::runtime_error("Unable to generate TCP socket");
 		}
 
-		// TCP keepalive so a device that vanishes without a clean close (power
-		// loss) is detected in ~11s instead of the multi-minute kernel default;
-		// read() then errors instead of blocking forever on a dead socket.
-		#if !defined(WIN32) && !defined(_WIN32)
-		{
-			int ka_on = 1;    // SO_KEEPALIVE enable
-			int ka_idle = 5;  // seconds of idle before the first probe
-			int ka_intvl = 2; // seconds between probes
-			int ka_cnt = 3;   // failed probes before the connection is dropped
-			setsockopt(sock_, SOL_SOCKET,  SO_KEEPALIVE,  &ka_on,    sizeof(ka_on));
-			setsockopt(sock_, IPPROTO_TCP, TCP_KEEPIDLE,  &ka_idle,  sizeof(ka_idle));
-			setsockopt(sock_, IPPROTO_TCP, TCP_KEEPINTVL, &ka_intvl, sizeof(ka_intvl));
-			setsockopt(sock_, IPPROTO_TCP, TCP_KEEPCNT,   &ka_cnt,   sizeof(ka_cnt));
-		}
-		#endif
+		enableKeepAlive();
 
 		// Give user info
 		inet_ntop(AF_INET, &(address_.sin_addr), ip, INET_ADDRSTRLEN);
